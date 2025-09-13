@@ -1,270 +1,168 @@
 import os
 import logging
-import asyncio
 from aiohttp import web
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, LabeledPrice
+from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
     ContextTypes,
-    filters,
+    CallbackQueryHandler,
     PreCheckoutQueryHandler,
+    filters,
 )
 
-# Логирование
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Константы
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
-YKASSA_TOKEN = os.environ.get("YKASSA_TOKEN")
 TOKEN = os.environ.get("TOKEN")
+ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", 0))
+YKASSA_TOKEN = os.environ.get("YKASSA_TOKEN")
 
-SELECTING_ACTION, GETTING_PHONE, GETTING_PLATFORM = range(3)
+SELECTING_PACKAGE, GETTING_PHONE, GETTING_PLATFORM = range(3)
 
+# --- Health endpoint для Render ---
+async def health(request):
+    return web.Response(text="OK", status=200)
 
-# ---------------- Бизнес-логика ---------------- #
+# --- Start ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("💡 1 консультация — 100 ₽", callback_data="1")],
+        [InlineKeyboardButton("📦 12 консультаций — 500 ₽ (экономия 700 ₽!)", callback_data="12")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-async def send_admin_notification(context: ContextTypes.DEFAULT_TYPE, user_data: dict, payment_info, user_id: int, username: str):
-    if not ADMIN_CHAT_ID:
-        logger.warning("ADMIN_CHAT_ID не установлен. Уведомление администратору не отправлено.")
-        return
-
-    try:
-        consultation_type = user_data.get("consultation_type", "")
-        phone = user_data.get("phone", "")
-        platform = user_data.get("platform", "")
-
-        admin_message = (
-            "🛎️ *НОВЫЙ ЗАКАЗ*\n\n"
-            f"✅ *Услуга:* {consultation_type}\n"
-            f"💰 *Сумма:* {payment_info.total_amount / 100} руб.\n"
-            f"📞 *Телефон:* {phone}\n"
-            f"📱 *Платформа:* {platform}\n"
-            f"👤 *Пользователь:* @{username if username else 'не указан'} (ID: {user_id})\n"
-            f"💳 *ID платежа:* {payment_info.provider_payment_charge_id}"
-        )
-
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID, text=admin_message, parse_mode="Markdown"
-        )
-        logger.info(f"Уведомление отправлено администратору {ADMIN_CHAT_ID}")
-
-    except Exception as e:
-        logger.error(f"Ошибка при отправке уведомления администратору: {e}")
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.message is None:
-        return ConversationHandler.END
-
-    description = (
-        "👋 Добро пожаловать в эксклюзивный сервис IT-консультаций!\n\n"
-        "💰 Стоимость консультаций:\n"
-        "• 1 консультация: 100 руб.\n"
-        "• 12 консультаций: 500 руб. (экономия 700 руб 🎉)\n\n"
-        "Выберите опцию:"
+    text = (
+        "👋 *Добро пожаловать в эксклюзивный сервис IT-консультаций!*\n\n"
+        "🎯 Предлагаем экспертные решения по IT проблемам только проверенными специалистами.\n\n"
+        "💰 *Стоимость консультаций:*\n"
+        "• 1 консультация: 100 ₽\n"
+        "• 12 консультаций: 500 ₽ (экономия 700 ₽!)\n\n"
+        "Выберите пакет ниже:"
     )
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    return SELECTING_PACKAGE
 
-    reply_keyboard = [["Купить 1 консультацию", "Купить 12 консультаций"]]
-    await update.message.reply_text(
-        description,
-        reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, resize_keyboard=True
-        ),
-    )
-    return SELECTING_ACTION
-
-
-async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text
-    context.user_data["consultation_type"] = text
-
-    if text == "Купить 1 консультацию":
-        context.user_data["price"] = 100
-        await update.message.reply_text(
-            "Вы выбрали 1 консультацию. Стоимость: 100 руб.\n\n"
-            "Введите ваш номер телефона:",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-    elif text == "Купить 12 консультаций":
-        context.user_data["price"] = 500
-        await update.message.reply_text(
-            "Вы выбрали пакет из 12 консультаций за 500 руб (скидка 700 руб 🎉).\n\n"
-            "Введите ваш номер телефона:",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+# --- Выбор пакета ---
+async def package_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    package = query.data
+    context.user_data['package'] = package
+    await query.message.reply_text("Введите ваш номер телефона:")
     return GETTING_PHONE
 
-
-async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# --- Ввод телефона ---
+async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text
-    if not phone or len(phone) < 5:
-        await update.message.reply_text("Введите корректный номер телефона:")
-        return GETTING_PHONE
+    context.user_data['phone'] = phone
 
-    context.user_data["phone"] = phone
-    platform_keyboard = [["iOS", "Android"]]
-    await update.message.reply_text(
-        "Спасибо! Теперь укажите вашу платформу:",
-        reply_markup=ReplyKeyboardMarkup(
-            platform_keyboard, one_time_keyboard=True, resize_keyboard=True
-        ),
-    )
+    keyboard = [[InlineKeyboardButton("iOS", callback_data="iOS")],
+                [InlineKeyboardButton("Android", callback_data="Android")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Выберите платформу:", reply_markup=reply_markup)
     return GETTING_PLATFORM
 
+# --- Выбор платформы и отправка счёта ---
+async def get_platform(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    platform = query.data
+    context.user_data['platform'] = platform
 
-async def get_platform(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    platform = update.message.text
-    context.user_data["platform"] = platform
+    package = context.user_data['package']
+    phone = context.user_data['phone']
 
-    consultation_type = context.user_data.get("consultation_type", "")
-    phone = context.user_data.get("phone", "")
-
-    if not YKASSA_TOKEN:
-        await update.message.reply_text(
-            "⚠️ Оплата временно недоступна. Обратитесь к администратору.",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        return ConversationHandler.END
-
-    if consultation_type == "Купить 1 консультацию":
+    if package == "1":
         title = "1 консультация IT специалиста"
-        description = "Разовая консультация IT специалиста"
-        payload = "1_consultation"
-        prices = [LabeledPrice(label="1 консультация", amount=10000)]
+        prices = [LabeledPrice("1 консультация", 10000)]
+        payload = f"1|{phone}|{platform}"
     else:
         title = "12 консультаций IT специалиста"
-        description = "Пакет из 12 консультаций IT специалиста"
-        payload = "12_consultations"
-        prices = [LabeledPrice(label="12 консультаций", amount=50000)]
+        prices = [LabeledPrice("12 консультаций", 50000)]
+        payload = f"12|{phone}|{platform}"
 
-    payload += f"|{phone}|{platform}"
+    await query.message.reply_invoice(
+        title=title,
+        description=f"IT консультации ({package})",
+        payload=payload,
+        provider_token=YKASSA_TOKEN,
+        currency="RUB",
+        prices=prices,
+        start_parameter="consultation_order",
+        need_phone_number=False,
+        need_email=False,
+        need_shipping_address=False
+    )
+    return ConversationHandler.END
 
-    try:
-        await context.bot.send_invoice(
-            chat_id=update.effective_chat.id,
-            title=title,
-            description=description,
-            payload=payload,
-            provider_token=YKASSA_TOKEN,
-            currency="RUB",
-            prices=prices,
-            start_parameter="consultation_order",
-            need_phone_number=False,
-            need_email=False,
-            need_shipping_address=False,
-            is_flexible=False,
-        )
-        return ConversationHandler.END
-
-    except Exception as e:
-        logger.error(f"Ошибка при отправке счета: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Не удалось создать счёт. Попробуйте позже или обратитесь к администратору.",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        return ConversationHandler.END
-
-
-
+# --- Precheckout ---
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
     await query.answer(ok=True)
 
+# --- Успешная оплата ---
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    payload_parts = payment.invoice_payload.split("|")
+    package = "1 консультация" if payload_parts[0] == "1" else "12 консультаций"
+    phone = payload_parts[1]
+    platform = payload_parts[2]
 
-async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment_info = update.message.successful_payment
-    payload_parts = payment_info.invoice_payload.split("|")
-    consultation_type = "1 консультация" if payload_parts[0] == "1_consultation" else "12 консультаций"
-    phone = payload_parts[1] if len(payload_parts) > 1 else "не указан"
-    platform = payload_parts[2] if len(payload_parts) > 2 else "не указана"
-
-    context.user_data.update(
-        {"consultation_type": consultation_type, "phone": phone, "platform": platform}
+    # Пользователь
+    text = (
+        f"✅ *Оплата прошла успешно!*\n\n"
+        f"💡 *Пакет:* {package}\n"
+        f"📱 *Платформа:* {platform}\n"
+        f"💰 *Сумма:* {payment.total_amount / 100} ₽\n\n"
+        "📝 В ближайшее время с вами свяжется наш специалист.\n"
+        "Спасибо за выбор нашего сервиса!"
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-    await update.message.reply_text(
-        f"✅ Оплата прошла успешно!\n\n"
-        f"Услуга: {consultation_type}\n"
-        f"Стоимость: {payment_info.total_amount / 100} руб.\n"
-        f"Телефон: {phone}\n"
-        f"Платформа: {platform}\n\n"
-        "С вами свяжется специалист 🤝",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    # Админ
+    if ADMIN_CHAT_ID:
+        admin_text = (
+            f"🛎️ *НОВЫЙ ЗАКАЗ*\n\n"
+            f"💡 *Пакет:* {package}\n"
+            f"📱 *Платформа:* {platform}\n"
+            f"💰 *Сумма:* {payment.total_amount / 100} ₽\n"
+            f"👤 *Пользователь:* @{update.effective_user.username or 'не указан'} (ID: {update.effective_user.id})\n"
+            f"💳 *ID платежа:* {payment.provider_payment_charge_id}"
+        )
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_text, parse_mode="Markdown")
 
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-    await send_admin_notification(context, context.user_data, payment_info, user_id, username)
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "Заказ отменён.", reply_markup=ReplyKeyboardRemove()
-    )
+# --- Отмена ---
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Заказ отменен.", reply_markup=None)
     return ConversationHandler.END
 
-
-# ---------------- Health Endpoint ---------------- #
-
-async def health(request):
-    return web.json_response({"status": "ok"})
-
-
-# ---------------- Main ---------------- #
-
-async def main():
-    if not TOKEN:
-        logger.error("TOKEN не найден!")
-        return
-
-    application = Application.builder().token(TOKEN).build()
+# --- Основной запуск ---
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            SELECTING_ACTION: [
-                MessageHandler(
-                    filters.Regex("^(Купить 1 консультацию|Купить 12 консультаций)$"),
-                    handle_action,
-                )
-            ],
+            SELECTING_PACKAGE: [CallbackQueryHandler(package_selection)],
             GETTING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
-            GETTING_PLATFORM: [
-                MessageHandler(filters.Regex("^(iOS|Android)$"), get_platform)
-            ],
+            GETTING_PLATFORM: [CallbackQueryHandler(get_platform)]
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
 
-    application.add_handler(conv_handler)
-    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+    app.add_handler(conv_handler)
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
 
-    # aiohttp сервер для healthcheck
-    app = web.Application()
-    app.router.add_get("/health", health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
-    await site.start()
-
-    # запускаем бота в этом же loop
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    logger.info("✅ Бот и health сервер запущены!")
-
-    # держим процесс живым
-    await asyncio.Event().wait()
-
+    # Webhook для Render
+    from aiohttp import web
+    web_app = web.Application()
+    web_app.router.add_get("/health", health)
+    web_app.router.add_post(f"/webhook/{TOKEN}", app.bot.webhook_handler)
+    web.run_app(web_app, port=int(os.environ.get("PORT", 8080)))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
