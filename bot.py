@@ -72,3 +72,17 @@ if __name__ == "__main__":
         url_path=BOT_TOKEN,
         webhook_url=WEBHOOK_URL
     )
+    
+from fastapi import FastAPI
+from bot_logic import start_webhook  # логика твоего бота в отдельном файле
+
+app = FastAPI()
+
+@app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: dict):
+    await start_webhook(token, request)
+    return {"ok": True}
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
