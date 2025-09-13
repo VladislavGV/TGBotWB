@@ -1,19 +1,16 @@
-# Используем лёгкий официальный образ Python
+# Используем официальный Python
 FROM python:3.11-slim
 
-# Устанавливаем рабочую директорию
+# Устанавливаем зависимости
 WORKDIR /app
-
-# Устанавливаем зависимости для сборки и работы (aiohttp, telegram и т.д.)
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
-
-# Копируем весь проект
+# Копируем код
 COPY . .
 
-# Открываем порт для Render (Render сам задаёт PORT)
-EXPOSE 8080
+# Порт Render
+ENV PORT=10000
 
 # Команда запуска
 CMD ["python", "bot.py"]
