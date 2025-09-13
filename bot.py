@@ -1,24 +1,30 @@
-# bot.py
-import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import logging
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = "8286347628:AAGn1jX3jB-gnVESPRZlmEeoWg9IFhRnw6M"
+# --- Настройки ---
+TELEGRAM_TOKEN = "8286347628:AAGn1jX3jB-gnVESPRZlmEeoWg9IFhRnw6M"
 ADMIN_CHAT_ID = 1082958705
-YUKASSA_TOKEN = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
-PORT = int(os.environ.get("PORT", 8000))
-WEBHOOK_URL = f"https://tgbotwb.onrender.com/webhook/{BOT_TOKEN}"
+YOOKASSA_TOKEN = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
 
-keyboard = ReplyKeyboardMarkup(
-    [
-        ["💳 Оплатить 100₽", "💳 Оплатить 500₽"],
-        ["📞 Ввести номер телефона", "🛎 Связь с администратором"]
-    ],
-    resize_keyboard=True
+PORT = 8000
+
+# --- Логирование ---
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-user_phone = {}
+# --- Клавиатура ---
+keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("💵 Оплатить 100₽"), KeyboardButton("💵 Оплатить 500₽")],
+    [KeyboardButton("📞 Ввести номер телефона", request_contact=True)],
+    [KeyboardButton("👤 Связь с администратором")]
+], resize_keyboard=True)
 
+
+# --- Команды ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 Добро пожаловать в эксклюзивный сервис IT-консультаций!\n\n"
@@ -31,58 +37,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, reply_markup=keyboard)
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# --- Обработка кнопок ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user_id = update.message.from_user.id
-    name = update.message.from_user.full_name
-    phone = user_phone.get(user_id, "Не указан")
+    user = update.message.from_user
 
-    if text == "📞 Ввести номер телефона":
-        await update.message.reply_text("Отправьте номер телефона:")
-    elif text.startswith("+") or text.isdigit():
-        user_phone[user_id] = text
-        await update.message.reply_text(f"Телефон {text} сохранен ✅")
-    elif text in ["💳 Оплатить 100₽", "💳 Оплатить 500₽"]:
-        amount = 100 if "100" in text else 500
-        order_text = (
-            f"Новый заказ:\n"
-            f"Имя: {name}\n"
-            f"Телеграм ID: {user_id}\n"
-            f"Телефон: {phone}\n"
-            f"Сумма: {amount}₽"
-        )
-        # Отправка админу
-        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=order_text)
-        await update.message.reply_text(f"Ваш заказ на {amount}₽ принят ✅")
-        # Здесь можно добавить интеграцию с ЮKassa
-    elif text == "🛎 Связь с администратором":
-        await update.message.reply_text(f"Связь с администратором: @{ADMIN_CHAT_ID}")
-    else:
-        await update.message.reply_text("Выберите опцию из меню", reply_markup=keyboard)
+    if text in ["💵 Оплатить 100₽", "💵 Оплатить 500₽"]:
+        amount = 100 if text.endswith("100₽") else 500
+        await update.message.reply_text(f"Вы выбрали оплату {amount}₽. Ссылка на оплату через ЮKassa будет здесь.")
+        # Здесь можно вставить интеграцию с ЮKassa API
+        await notify_admin(user.id, user.full_name, None, amount)
 
+    elif text == "👤 Связь с администратором":
+        await update.message.reply_text(f"Администратор: @{ADMIN_CHAT_ID}")
+
+    elif text == "📞 Ввести номер телефона":
+        await update.message.reply_text("Нажмите кнопку ниже, чтобы отправить ваш номер телефона.")
+
+    elif update.message.contact:
+        phone = update.message.contact.phone_number
+        await update.message.reply_text(f"Спасибо! Ваш номер {phone} получен.")
+        await notify_admin(user.id, user.full_name, phone, None)
+
+
+# --- Функция уведомления администратора ---
+async def notify_admin(user_id, full_name, phone, amount):
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    message = f"Новый заказ:\nID: {user_id}\nИмя: {full_name}\n"
+    if phone:
+        message += f"Телефон: {phone}\n"
+    if amount:
+        message += f"Сумма оплаты: {amount}₽"
+    await app.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
+
+
+# --- Основной запуск ---
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT | filters.CONTACT, handle_message))
 
-    # Запуск webhook сервера
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=WEBHOOK_URL
-    )
-    
-from fastapi import FastAPI
-from bot_logic import start_webhook  # логика твоего бота в отдельном файле
+    # Для Render используем webhook (укажи свой URL)
+    RENDER_URL = "https://tgbotwb.onrender.com"
+    WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 
-app = FastAPI()
+    import asyncio
+    import uvicorn
+    from fastapi import FastAPI, Request
 
-@app.post("/webhook/{token}")
-async def telegram_webhook(token: str, request: dict):
-    await start_webhook(token, request)
-    return {"ok": True}
+    fast_app = FastAPI()
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+    @fast_app.post(WEBHOOK_PATH)
+    async def telegram_webhook(req: Request):
+        body = await req.json()
+        update = Update.de_json(body)
+        await app.update_queue.put(update)
+        return {"ok": True}
+
+    @fast_app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    uvicorn.run(fast_app, host="0.0.0.0", port=PORT)
