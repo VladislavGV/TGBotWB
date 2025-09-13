@@ -122,19 +122,20 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def get_platform(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     platform = update.message.text
     context.user_data["platform"] = platform
+
     consultation_type = context.user_data.get("consultation_type", "")
     phone = context.user_data.get("phone", "")
 
     if not YKASSA_TOKEN:
         await update.message.reply_text(
-            "Оплата временно недоступна. Попробуйте позже.",
+            "⚠️ Оплата временно недоступна. Обратитесь к администратору.",
             reply_markup=ReplyKeyboardRemove(),
         )
         return ConversationHandler.END
 
     if consultation_type == "Купить 1 консультацию":
         title = "1 консультация IT специалиста"
-        description = "Консультация IT специалиста"
+        description = "Разовая консультация IT специалиста"
         payload = "1_consultation"
         prices = [LabeledPrice(label="1 консультация", amount=10000)]
     else:
@@ -160,13 +161,16 @@ async def get_platform(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             need_shipping_address=False,
             is_flexible=False,
         )
+        return ConversationHandler.END
+
     except Exception as e:
         logger.error(f"Ошибка при отправке счета: {e}", exc_info=True)
         await update.message.reply_text(
-            "Ошибка при создании счета. Попробуйте позже.",
+            "❌ Не удалось создать счёт. Попробуйте позже или обратитесь к администратору.",
             reply_markup=ReplyKeyboardRemove(),
         )
-    return ConversationHandler.END
+        return ConversationHandler.END
+
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
