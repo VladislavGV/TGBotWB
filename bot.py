@@ -1,101 +1,109 @@
 import logging
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
-import os
-from aiohttp import web
+import json
+import base64
+from aiohttp import web, ClientSession
+from telegram import Bot, Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Dispatcher, CallbackContext
 
 # --- Настройки ---
-BOT_TOKEN = "8286347628:AAGn1jX3jB-gnVESPRZlmEeoWg9IFhRnw6M"
+TOKEN = "8286347628:AAGn1jX3jB-gnVESPRZlmEeoWg9IFhRnw6M"
 ADMIN_CHAT_ID = 1082958705
-YKASSA_TOKEN = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
-PORT = int(os.environ.get("PORT", 8000))
+YUKASSA_SHOP_ID = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
+YUKASSA_TOKEN = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
 
-# --- Логирование ---
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# --- Состояния для ConversationHandler ---
-ASK_PHONE = 1
-ASK_PAYMENT = 2
-
-# --- Приветственное сообщение ---
-WELCOME_TEXT = (
-    "👋 Добро пожаловать в эксклюзивный сервис IT-консультаций!\n\n"
-    "🎯 Наши консультации доступны только по рекомендации узкого круга людей.\n"
-    "💼 Мы предлагаем экспертные решения для ваших IT-проблем от проверенных специалистов.\n\n"
-    "💰 Стоимость консультаций:\n"
-    "• 1 консультация: 100 руб.\n"
-    "• 12 консультаций: 500 руб. (Вы экономите 700 руб! 🎉)\n\n"
-    "Выберите опцию:"
-)
+bot = Bot(token=TOKEN)
 
 # --- Клавиатура ---
-def main_keyboard():
-    keyboard = [
-        [KeyboardButton("Оплатить 100₽"), KeyboardButton("Оплатить 500₽")],
-        [KeyboardButton("Ввести номер телефона", request_contact=True)],
-        [KeyboardButton("Связь с администратором")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+keyboard = [
+    [KeyboardButton("Оплатить 100₽"), KeyboardButton("Оплатить 500₽")],
+    [KeyboardButton("Ввести номер телефона", request_contact=True)],
+    [KeyboardButton("Связь с администратором")]
+]
+reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- Обработчики ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(WELCOME_TEXT, reply_markup=main_keyboard())
+# --- Словарь для хранения данных клиента перед оплатой ---
+pending_payments = {}
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Приветственное сообщение ---
+async def start(update: Update, context: CallbackContext = None):
+    welcome_text = (
+        "👋 Добро пожаловать в эксклюзивный сервис IT-консультаций!\n\n"
+        "🎯 Наши консультации доступны только по рекомендации узкого круга людей.\n"
+        "💼 Мы предлагаем экспертные решения для ваших IT-проблем от проверенных специалистов.\n\n"
+        "💰 Стоимость консультаций:\n"
+        "• 1 консультация: 100 руб.\n"
+        "• 12 консультаций: 500 руб. (Вы экономите 700 руб! 🎉)\n\n"
+        "Выберите опцию:"
+    )
+    await bot.send_message(chat_id=update.message.chat_id, text=welcome_text, reply_markup=reply_markup)
+
+# --- Создание платежа через ЮKassa ---
+async def create_yukassa_payment(user_id: int, amount: int, username: str):
+    url = "https://api.yookassa.ru/v3/payments"
+    headers = {
+        "Authorization": f"Basic {base64.b64encode(f'{YUKASSA_SHOP_ID}:{YUKASSA_TOKEN}'.encode()).decode()}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "amount": {"value": str(amount), "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": "https://tgbotwb.onrender.com"},
+        "capture": True,
+        "description": f"Оплата {amount}₽ пользователем {username} ({user_id})"
+    }
+    async with ClientSession() as session:
+        async with session.post(url, headers=headers, data=json.dumps(data)) as resp:
+            result = await resp.json()
+            pending_payments[result["id"]] = {"user_id": user_id, "username": username, "amount": amount}
+            return result.get("confirmation", {}).get("confirmation_url")
+
+# --- Обработка сообщений пользователя ---
+async def handle_message(update, context=None):
     text = update.message.text
-    user = update.message.from_user
+    user_id = update.message.from_user.id
+    username = update.message.from_user.full_name
+    contact = update.message.contact.phone_number if update.message.contact else None
 
     if text == "Связь с администратором":
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"Пользователь хочет связаться с администратором:\n"
-                 f"ID: {user.id}\nИмя: {user.full_name}"
-        )
-        await update.message.reply_text("Администратор уведомлен и свяжется с вами.")
-    
+        await bot.send_message(chat_id=user_id, text="Администратор свяжется с вами скоро.")
+        await bot.send_message(chat_id=ADMIN_CHAT_ID,
+                               text=f"Пользователь {username} ({user_id}) хочет связаться с администратором.")
+
     elif text in ["Оплатить 100₽", "Оплатить 500₽"]:
-        amount = 100 if text.endswith("100₽") else 500
-        await update.message.reply_text(f"Вы выбрали оплату {amount}₽. Отправьте номер телефона ниже для завершения заказа.")
+        amount = 100 if "100" in text else 500
+        payment_url = await create_yukassa_payment(user_id, amount, username)
+        if payment_url:
+            await bot.send_message(chat_id=user_id, text=f"Перейдите по ссылке для оплаты: {payment_url}")
+        else:
+            await bot.send_message(chat_id=user_id, text="Ошибка при создании платежа, попробуйте позже.")
 
     elif update.message.contact:
-        phone = update.message.contact.phone_number
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"Новая оплата:\n"
-                 f"Пользователь: {user.full_name}\n"
-                 f"Telegram ID: {user.id}\n"
-                 f"Телефон: {phone}\n"
-                 f"Сумма: {context.user_data.get('payment_amount', 'Не выбрана')}"
-        )
-        await update.message.reply_text("Спасибо! Ваша информация отправлена администратору.")
+        await bot.send_message(chat_id=user_id, text=f"Спасибо! Ваш номер {contact} сохранен.")
 
-# --- Webhook для Render ---
-async def webhook(request):
+# --- Webhook Telegram ---
+async def handle_telegram_webhook(request):
     data = await request.json()
-    update = Update.de_json(data, app.bot)
-    await app.bot.process_update(update)
-    return web.Response(text="OK")
+    update = Update.de_json(data, bot)
+    await handle_message(update)
+    return web.Response(text="ok")
 
-# --- Основная функция ---
-async def main():
-    global app
-    app = web.Application()
-    app.router.add_post(f"/webhook/{BOT_TOKEN}", webhook)
+# --- Webhook ЮKassa ---
+async def handle_yukassa_webhook(request):
+    data = await request.json()
+    payment_id = data.get("object", {}).get("id")
+    status = data.get("object", {}).get("status")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    if status == "succeeded" and payment_id in pending_payments:
+        info = pending_payments.pop(payment_id)
+        await bot.send_message(chat_id=ADMIN_CHAT_ID,
+                               text=f"Новая успешная оплата!\n"
+                                    f"Пользователь: {info['username']}\n"
+                                    f"ID: {info['user_id']}\n"
+                                    f"Сумма: {info['amount']}₽")
+    return web.Response(text="ok")
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    logger.info(f"Bot running on port {PORT}")
-    while True:
-        await asyncio.sleep(3600)  # Keep alive
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+# --- ASGI app ---
+app = web.Application()
+app.router.add_post(f"/webhook/{TOKEN}", handle_telegram_webhook)
+app.router.add_post("/yukassa-webhook", handle_yukassa_webhook)
