@@ -1,25 +1,20 @@
-# Используем официальный Python 3.11
+# Используем официальный Python образ
 FROM python:3.11-slim
 
-# Устанавливаем зависимости
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Создаем рабочую директорию
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
 # Копируем зависимости
 COPY requirements.txt .
 
-# Устанавливаем pip-зависимости
+# Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем код бота
-COPY . .
+COPY bot.py .
 
-# Указываем порт Render
-ENV PORT=8000
+# Указываем порт, который слушает FastAPI
+EXPOSE 8000
 
-# Команда запуска
-CMD ["uvicorn", "bot:app", "--host", "0.0.0.0", "--port", "8000"]
+# Команда для запуска бота
+CMD ["python", "bot.py"]
