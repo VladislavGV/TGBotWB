@@ -1,14 +1,13 @@
 # bot.py
 import os
-import logging
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
-logging.basicConfig(level=logging.INFO)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 BOT_TOKEN = "8286347628:AAGn1jX3jB-gnVESPRZlmEeoWg9IFhRnw6M"
 ADMIN_CHAT_ID = 1082958705
+YUKASSA_TOKEN = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
 PORT = int(os.environ.get("PORT", 8000))
+WEBHOOK_URL = f"https://tgbotwb.onrender.com/webhook/{BOT_TOKEN}"
 
 keyboard = ReplyKeyboardMarkup(
     [
@@ -45,15 +44,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Телефон {text} сохранен ✅")
     elif text in ["💳 Оплатить 100₽", "💳 Оплатить 500₽"]:
         amount = 100 if "100" in text else 500
-        order_text = f"Новый заказ:\nИмя: {name}\nТелеграм ID: {user_id}\nТелефон: {phone}\nСумма: {amount}₽"
+        order_text = (
+            f"Новый заказ:\n"
+            f"Имя: {name}\n"
+            f"Телеграм ID: {user_id}\n"
+            f"Телефон: {phone}\n"
+            f"Сумма: {amount}₽"
+        )
+        # Отправка админу
         await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=order_text)
         await update.message.reply_text(f"Ваш заказ на {amount}₽ принят ✅")
+        # Здесь можно добавить интеграцию с ЮKassa
     elif text == "🛎 Связь с администратором":
         await update.message.reply_text(f"Связь с администратором: @{ADMIN_CHAT_ID}")
     else:
         await update.message.reply_text("Выберите опцию из меню", reply_markup=keyboard)
 
-# --- Важно: создаем app для Render ---
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Запуск webhook сервера
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=WEBHOOK_URL
+    )
