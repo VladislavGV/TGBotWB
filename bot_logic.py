@@ -1,38 +1,43 @@
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
-import requests
 
-async def handle_support(update: Update, context: ContextTypes.DEFAULT_TYPE, admin_id: int):
-    user = update.message.from_user
-    msg = f"⚠️ Пользователь {user.first_name} @{user.username} ({user.id}) просит поддержку"
-    await context.bot.send_message(chat_id=admin_id, text=msg)
-    await update.message.reply_text("✅ Ваше сообщение отправлено администратору.")
+ADMIN_CHAT_ID = 1082958705
 
-async def handle_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, admin_id: int, yukassa_token: str):
-    data = context.user_data
-    # Сообщение админу
-    msg = (
-        f"💰 Новый заказ!\n"
-        f"👤 Пользователь: {update.message.from_user.first_name}\n"
-        f"🆔 Telegram ID: {data['user_id']}\n"
-        f"📲 Телефон: {data['phone']}\n"
-        f"📱 Платформа: {data['platform']}\n"
-        f"💳 Сумма: {data['amount']}₽"
+async def handle_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: int):
+    phone_keyboard = [[KeyboardButton("Ввести номер телефона", request_contact=True)]]
+    await update.message.reply_text(
+        f"Вы выбрали оплату {amount}₽. Пожалуйста, введите ваш номер телефона:",
+        reply_markup=ReplyKeyboardMarkup(phone_keyboard, resize_keyboard=True)
     )
-    await context.bot.send_message(chat_id=admin_id, text=msg)
+    context.user_data['amount'] = amount
 
-    # Создание платежа в ЮKassa
-    payment_data = {
-        "amount": {"value": str(data['amount']), "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": "https://tgbotwb.onrender.com"},
-        "capture": True,
-        "description": f"Оплата консультации {data['amount']} руб."
-    }
-    headers = {"Authorization": f"Bearer {yukassa_token}", "Content-Type": "application/json"}
-    r = requests.post("https://api.yookassa.ru/v3/payments", json=payment_data, headers=headers)
-    if r.status_code == 200 or r.status_code == 201:
-        payment_url = r.json()['confirmation']['confirmation_url']
-        await update.message.reply_text(f"Перейдите для оплаты: {payment_url}")
-    else:
-        await update.message.reply_text("❌ Ошибка при создании платежа. Попробуйте позже.")
+async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contact = update.message.contact
+    context.user_data['phone'] = contact.phone_number
+    context.user_data['user_id'] = update.effective_user.id
 
+    platform_keyboard = [["iOS"], ["Android"]]
+    await update.message.reply_text(
+        "Выберите платформу вашего телефона:",
+        reply_markup=ReplyKeyboardMarkup(platform_keyboard, resize_keyboard=True)
+    )
+
+async def handle_platform(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    platform = update.message.text
+    context.user_data['platform'] = platform
+
+    # Отправка админу
+    message = (
+        f"Новый заказ:\n"
+        f"ID: {context.user_data['user_id']}\n"
+        f"Телефон: {context.user_data['phone']}\n"
+        f"Платформа: {platform}\n"
+        f"Сумма: {context.user_data['amount']}₽"
+    )
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
+    await update.message.reply_text("Спасибо! Ваш заказ отправлен, ожидайте инструкций оплаты.")
+
+async def handle_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = f"Пользователь {update.effective_user.first_name} хочет связаться с поддержкой."
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+    await update.message.reply_text("Сообщение отправлено администратору.")
