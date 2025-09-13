@@ -1,30 +1,35 @@
+# bot.py
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from fastapi import FastAPI, Request
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# --- Настройки ---
+# -------------------- Настройки --------------------
 TELEGRAM_TOKEN = "8286347628:AAGn1jX3jB-gnVESPRZlmEeoWg9IFhRnw6M"
 ADMIN_CHAT_ID = 1082958705
 YOOKASSA_TOKEN = "test_a-AT5Q8y-jV4fkRKCOYJLXkeKeg-wJzs0L-oN7udAzo"
 
-PORT = 8000
-
-# --- Логирование ---
+# -------------------- Логирование --------------------
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Клавиатура ---
-keyboard = ReplyKeyboardMarkup([
-    [KeyboardButton("💵 Оплатить 100₽"), KeyboardButton("💵 Оплатить 500₽")],
-    [KeyboardButton("📞 Ввести номер телефона", request_contact=True)],
-    [KeyboardButton("👤 Связь с администратором")]
-], resize_keyboard=True)
+# -------------------- FastAPI --------------------
+app = FastAPI()
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+# -------------------- Клавиатура --------------------
+keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("Оплатить 100₽"), KeyboardButton("Оплатить 500₽")],
+        [KeyboardButton("Ввести номер телефона", request_contact=True)],
+        [KeyboardButton("Связь с администратором")]
+    ],
+    resize_keyboard=True
+)
 
-# --- Команды ---
+# -------------------- Команды --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 Добро пожаловать в эксклюзивный сервис IT-консультаций!\n\n"
@@ -37,66 +42,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, reply_markup=keyboard)
 
-
-# --- Обработка кнопок ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user = update.message.from_user
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username
+    first_name = update.message.from_user.first_name
+    contact = update.message.contact.phone_number if update.message.contact else None
 
-    if text in ["💵 Оплатить 100₽", "💵 Оплатить 500₽"]:
-        amount = 100 if text.endswith("100₽") else 500
-        await update.message.reply_text(f"Вы выбрали оплату {amount}₽. Ссылка на оплату через ЮKassa будет здесь.")
-        # Здесь можно вставить интеграцию с ЮKassa API
-        await notify_admin(user.id, user.full_name, None, amount)
+    if text == "Связь с администратором":
+        await application.bot.send_message(
+            chat_id=user_id,
+            text="Администратор свяжется с вами в ближайшее время."
+        )
+        await application.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"Пользователь @{username} ({first_name}, ID: {user_id}) хочет связаться с администратором."
+        )
+    elif text in ["Оплатить 100₽", "Оплатить 500₽"]:
+        amount = 100 if text == "Оплатить 100₽" else 500
+        await application.bot.send_message(
+            chat_id=user_id,
+            text=f"Ссылка на оплату {amount}₽ через ЮKassa: https://yookassa.ru/payments-test?amount={amount}"
+        )
+        # Отправка админу
+        await application.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=f"Новый заказ:\nПользователь: @{username} ({first_name})\nID: {user_id}\nСумма: {amount}₽\nТелефон: {contact or 'не указан'}"
+        )
 
-    elif text == "👤 Связь с администратором":
-        await update.message.reply_text(f"Администратор: @{ADMIN_CHAT_ID}")
+# -------------------- Обработчики --------------------
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT | filters.CONTACT, handle_message))
 
-    elif text == "📞 Ввести номер телефона":
-        await update.message.reply_text("Нажмите кнопку ниже, чтобы отправить ваш номер телефона.")
+# -------------------- Webhook --------------------
+@app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: Request):
+    if token != TELEGRAM_TOKEN:
+        return {"ok": False, "error": "Invalid token"}
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    await application.update_queue.put(update)
+    return {"ok": True}
 
-    elif update.message.contact:
-        phone = update.message.contact.phone_number
-        await update.message.reply_text(f"Спасибо! Ваш номер {phone} получен.")
-        await notify_admin(user.id, user.full_name, phone, None)
-
-
-# --- Функция уведомления администратора ---
-async def notify_admin(user_id, full_name, phone, amount):
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    message = f"Новый заказ:\nID: {user_id}\nИмя: {full_name}\n"
-    if phone:
-        message += f"Телефон: {phone}\n"
-    if amount:
-        message += f"Сумма оплаты: {amount}₽"
-    await app.bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
-
-
-# --- Основной запуск ---
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT | filters.CONTACT, handle_message))
-
-    # Для Render используем webhook (укажи свой URL)
-    RENDER_URL = "https://tgbotwb.onrender.com"
-    WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
-
-    import asyncio
-    import uvicorn
-    from fastapi import FastAPI, Request
-
-    fast_app = FastAPI()
-
-    @fast_app.post(WEBHOOK_PATH)
-    async def telegram_webhook(req: Request):
-        body = await req.json()
-        update = Update.de_json(body)
-        await app.update_queue.put(update)
-        return {"ok": True}
-
-    @fast_app.get("/health")
-    async def health():
-        return {"status": "ok"}
-
-    uvicorn.run(fast_app, host="0.0.0.0", port=PORT)
+# -------------------- Healthcheck --------------------
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
