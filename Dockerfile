@@ -1,17 +1,18 @@
-# Базовый образ Python
+# Используем официальный Python 3.11 образ
 FROM python:3.11-slim
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
 # Копируем файлы проекта
-COPY . /app
+COPY . .
 
 # Устанавливаем зависимости
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
 
-# Устанавливаем переменные окружения (порт берется из Render)
-ENV PORT 8000
+# Указываем порт, который будет слушать Render
+EXPOSE 8000
 
-# Запускаем бота
+# Команда запуска бота
 CMD ["python", "bot.py"]
